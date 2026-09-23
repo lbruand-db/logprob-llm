@@ -8,3 +8,5 @@ build/
 .pytest_cache/
 # generated datasets
 *.jsonl
+# Isaac local tooling state
+.isaac/
