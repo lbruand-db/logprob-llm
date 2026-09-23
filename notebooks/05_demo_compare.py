@@ -52,7 +52,10 @@ def teacher_route(text):
         model=teacher,
         messages=[{"role": "user", "content": build_routing_prompt(text)}],
         max_tokens=32, temperature=0.0)
-    raw = (r.choices[0].message.content or "").strip()
+    content = r.choices[0].message.content
+    if isinstance(content, list):  # Claude returns a list of content blocks
+        content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+    raw = (content or "").strip()
     m = re.search(f"[{''.join(LETTERS)}]", raw)
     return (m.group(0) if m else "?"), raw
 

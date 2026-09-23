@@ -24,6 +24,19 @@ from logprob_llm.prompts import build_generation_prompt, build_routing_prompt
 _ANSWER = answer_token_strings()
 
 
+def content_to_text(content: Any) -> str:
+    """Normalize an OpenAI-compatible message content to a string.
+
+    Some Databricks-hosted models (e.g. Claude) return `content` as a list of
+    content blocks (dicts with a 'text' field) rather than a plain string.
+    """
+    if isinstance(content, list):
+        return "".join(
+            (block.get("text", "") if isinstance(block, dict) else str(block)) for block in content
+        )
+    return content or ""
+
+
 def _parse_tickets(text: str) -> list[str]:
     """Split a teacher response into individual tickets.
 
@@ -46,7 +59,7 @@ def _one_ticket(client: Any, model: str, letter: str, name: str, temperature: fl
         temperature=temperature,
         max_tokens=200,
     )
-    tickets = _parse_tickets(resp.choices[0].message.content or "")
+    tickets = _parse_tickets(content_to_text(resp.choices[0].message.content))
     return tickets[0] if tickets else None
 
 
