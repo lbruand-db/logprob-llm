@@ -19,6 +19,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    env:
+      # Resolve from public PyPI (no committed lock; runner has no internal mirror).
+      UV_INDEX_URL: https://pypi.org/simple
     steps:
       - uses: actions/checkout@v4
 

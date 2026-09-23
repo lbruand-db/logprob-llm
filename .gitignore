@@ -10,3 +10,5 @@ build/
 *.jsonl
 # Isaac local tooling state
 .isaac/
+# uv lockfile: pins internal-mirror URLs on this machine; resolve fresh instead
+uv.lock
