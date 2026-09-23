@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath("../data"))
 dbutils.widgets.text("catalog", "main", "UC catalog")
 dbutils.widgets.text("schema", "logprob", "Schema")
 dbutils.widgets.text("volume", "data", "Volume")
-dbutils.widgets.text("teacher_model", "databricks-meta-llama-3-3-70b-instruct", "Teacher FM endpoint")
+dbutils.widgets.text("teacher_model", "databricks-claude-sonnet-5", "Teacher FM endpoint (opus-5 for max quality, llama-4-maverick for cheapest)")
 dbutils.widgets.text("n_per_team", "300", "Tickets per team")
 
 catalog = dbutils.widgets.get("catalog")

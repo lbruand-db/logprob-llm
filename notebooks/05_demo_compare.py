@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.abspath("../src"))
 dbutils.widgets.text("catalog", "main", "UC catalog")
 dbutils.widgets.text("schema", "logprob", "Schema")
 dbutils.widgets.text("endpoint", "logprob-qwen3", "Our serving endpoint")
-dbutils.widgets.text("teacher_model", "databricks-meta-llama-3-3-70b-instruct", "Frontier/teacher endpoint")
+dbutils.widgets.text("teacher_model", "databricks-claude-sonnet-5", "Frontier baseline endpoint (opus-5 / llama-4-maverick also fine)")
 
 catalog = dbutils.widgets.get("catalog"); schema = dbutils.widgets.get("schema")
 endpoint = dbutils.widgets.get("endpoint"); teacher = dbutils.widgets.get("teacher_model")
