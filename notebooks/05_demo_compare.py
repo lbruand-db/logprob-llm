@@ -9,13 +9,15 @@
 # MAGIC %restart_python
 
 # COMMAND ----------
+import re
 import sys, os, time
 sys.path.insert(0, os.path.abspath("../src"))
+from logprob_llm.config import DEFAULT_TEACHER_MODEL, _TEACHER_HELP
 
 dbutils.widgets.text("catalog", "main", "UC catalog")
 dbutils.widgets.text("schema", "logprob", "Schema")
 dbutils.widgets.text("endpoint", "logprob-qwen3", "Our serving endpoint")
-dbutils.widgets.text("teacher_model", "databricks-claude-sonnet-5", "Frontier baseline endpoint (opus-5 / llama-4-maverick also fine)")
+dbutils.widgets.text("teacher_model", DEFAULT_TEACHER_MODEL, _TEACHER_HELP)
 
 catalog = dbutils.widgets.get("catalog"); schema = dbutils.widgets.get("schema")
 endpoint = dbutils.widgets.get("endpoint"); teacher = dbutils.widgets.get("teacher_model")
@@ -47,16 +49,22 @@ for s in SAMPLES:
 
 # COMMAND ----------
 # Frontier chat baseline for contrast (returns prose; we parse the letter).
+# A frontier model may emit whitespace/preamble/reasoning before the letter, so
+# give it room and extract the first valid routing letter robustly.
+from logprob_llm.labels import LETTERS
+
 def teacher_route(text):
     r = client.chat.completions.create(
         model=teacher,
         messages=[{"role": "user", "content": build_routing_prompt(text)}],
-        max_tokens=8, temperature=0.0)
-    return r.choices[0].message.content.strip()
+        max_tokens=32, temperature=0.0)
+    raw = (r.choices[0].message.content or "").strip()
+    m = re.search(f"[{''.join(LETTERS)}]", raw)
+    return (m.group(0) if m else "?"), raw
 
 for s in SAMPLES[:2]:
-    t0 = time.time(); ans = teacher_route(s); dt = (time.time() - t0) * 1000
-    print(f"TICKET: {s}\n  TEACHER -> '{ans}'  [{dt:.0f} ms]  (no calibrated probability)")
+    t0 = time.time(); letter, raw = teacher_route(s); dt = (time.time() - t0) * 1000
+    print(f"TICKET: {s}\n  TEACHER -> {letter}  (raw: {raw!r})  [{dt:.0f} ms]  (no calibrated probability)")
 
 # COMMAND ----------
 # MAGIC %md
