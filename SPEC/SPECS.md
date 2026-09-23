@@ -1,4 +1,4 @@
-# Spec: Fine-tune & deploy an OSS "log-prob" LLM (a Jev-like model) on Databricks
+# Spec: Fine-tune & deploy an OSS "log-prob" LLM on Databricks
 
 **Status:** Draft / demo blueprint
 **Owner:** lbruand
@@ -9,9 +9,9 @@
 
 ## 0. TL;DR
 
-Build the open-source analog of [**Jev**](https://en.wikipedia.org/wiki/Jev_(AI_model)) — an
-LLM that, instead of generating prose, returns a **typed value together with a calibrated
-probability**. We do it on Databricks by:
+Build an open-source **log-prob LLM** — a model that, instead of generating prose, returns a
+**typed value together with a calibrated probability** (a class label, an ordinal score, or a
+probability in `[0, 1]`). We do it on Databricks by:
 
 1. **Distilling** a frontier "teacher" model into a labeled/synthetic dataset in Unity Catalog.
 2. **Fine-tuning** a small, *current* open-weight model (**Qwen3 1.7B / 0.6B** by default — see
@@ -20,50 +20,45 @@ probability**. We do it on Databricks by:
 3. **Reading the log-probabilities** of those answer tokens at inference (via the Model Serving
    `completions` endpoint) to recover a full probability distribution over the answer space.
 4. **Calibrating** those probabilities (temperature scaling) so they mean what they say.
-5. **Serving** a thin typed contract — `{value, probability, confidence}` — that mirrors Jev's
-   `Choice` / `Score` / `Noul` primitives.
+5. **Serving** a thin typed contract — `{value, probability, confidence}` — exposing three
+   primitives: `Choice` (a label), `Score` (an ordinal level), and `Prob` (a probability in
+   `[0, 1]`).
 
-The payoff, like Jev's pitch, is **latency and cost**: a right-sized 1B model emitting one token
-is far cheaper and faster than a frontier chat model reasoning in prose — and it runs inside the
-customer's Databricks governance boundary. §11 quantifies the trade-off and the break-even.
+The payoff is **latency and cost**: a right-sized 1B model emitting one token is far cheaper and
+faster than a frontier chat model reasoning in prose — and it runs inside the customer's
+Databricks governance boundary. §11 quantifies the trade-off and the break-even.
 
-> **Sources note.** The two links in the request were used as follows. The Wikipedia article on
-> Jev was read and is the basis for §1. The `chatgpt.com/s/...` share link requires
-> authentication and could **not** be fetched; if there is specific content in it we should
-> incorporate, paste the transcript and this spec will be updated. All Databricks feature names,
-> DBU rates, and third-party API prices below were gathered via web research on 2026-09-23 and
-> are **illustrative** — verify against the live pricing pages and your contract before quoting a
-> customer (see §13, References).
+> **Sources note.** All Databricks feature names, DBU rates, and third-party API prices below were
+> gathered via web research on 2026-09-23 and are **illustrative** — verify against the live
+> pricing pages and your contract before quoting a customer (see §14, References).
 
 ---
 
-## 1. Background: what "Jev" is, and what "log-prob LLM" means
+## 1. Background: what a "log-prob LLM" is
 
-[Jev](https://en.wikipedia.org/wiki/Jev_(AI_model)) is a **proprietary** model from **TypeSafe
-AI** (San Francisco, founded 2024; CEO Diogo Almeida, previously at OpenAI on RLHF / InstructGPT /
-ChatGPT / GPT-4). It is deliberately **not** a chat model:
+A **log-prob LLM** is a model used deliberately as a *decision function*, not a chat model. A
+recent class of commercial systems popularized the pattern; this spec builds the open-source
+equivalent. The defining traits:
 
-- **Output is for software, not humans.** Jev "returns typed values together with probability
-  estimates and confidence scores." There is no free-text generation to parse, and therefore no
+- **Output is for software, not humans.** It returns typed values together with probability
+  estimates and confidence scores. There is no free-text generation to parse, and therefore no
   hallucinated formatting or type errors.
-- **Three question primitives:**
+- **Three typed primitives:**
   - **Choice** — pick one of N options; returns a probability per option.
   - **Score** — an ordinal level (e.g. 1–5); returns a probability per level.
-  - **Noul** — a single probability in `[0, 1]` (a calibrated yes/no likelihood).
-- **Training:** transformer-based, trained *exclusively on synthetic data* with a method
-  TypeSafe calls **RLCD (Reinforcement Learning for Calibrated Decisions)**, where
-  "probabilities are optimized against **outcomes** rather than against human rater preference."
-  Weights, parameter count and architecture are undisclosed.
-- **Claims:** 70–500 ms responses; "40 to 200× faster and 40 to 400× cheaper than frontier LLMs"
-  (self-reported, peak 193.6× faster / 444.6× cheaper). Limited early access launched
-  2026-09-15; $40M seed led by DCVC.
+  - **Prob** — a single probability in `[0, 1]` (a calibrated yes/no likelihood).
+- **Calibrated by design.** The reported probability is optimized against *outcomes*, so it can be
+  trusted as a confidence — not merely a softmax artifact.
+- **Fast and cheap.** Sub-second responses (target ~70–500 ms) at a small fraction of a frontier
+  chat model's per-call cost, because the model is small and emits a single token.
 
-**Why an OSS analog is feasible.** Every frontier and open model already computes a probability
+**Why an OSS equivalent is feasible.** Every frontier and open model already computes a probability
 distribution over the next token; a chat wrapper just samples from it and throws the numbers
 away. If we (a) constrain the answer to a single known token per class and (b) expose the
-per-token `logprobs`, we recover exactly the "typed value + probability" contract Jev sells — and
-fine-tuning + post-hoc calibration is the pragmatic, reproducible stand-in for RLCD. This is a
-well-established recipe (LLM-as-classifier + temperature scaling; Guo et al., 2017).
+per-token `logprobs`, we recover exactly the "typed value + probability" contract — and
+fine-tuning + post-hoc calibration is the pragmatic, reproducible way to make those probabilities
+trustworthy. This is a well-established recipe (LLM-as-classifier + temperature scaling; Guo et
+al., 2017).
 
 ---
 
@@ -72,12 +67,12 @@ well-established recipe (LLM-as-classifier + temperature scaling; Guo et al., 20
 **Goals**
 - A reproducible Databricks demo that fine-tunes and serves a small OSS model returning
   **calibrated, typed** outputs with per-answer log-probabilities.
-- Support the three Jev primitives (`Choice`, `Score`, `Noul`) behind one typed serving contract.
+- Support the three typed primitives (`Choice`, `Score`, `Prob`) behind one typed serving contract.
 - A defensible **cost & latency comparison** vs. calling a frontier LLM API for the same task.
 - Everything inside **Unity Catalog** governance (data, model, endpoint, lineage).
 
 **Non-goals**
-- Reproducing Jev's exact weights, RLCD algorithm, or benchmark numbers (undisclosed/proprietary).
+- Reproducing any specific proprietary model's weights, training method, or benchmark numbers.
 - General-purpose text generation. This model does classification / scoring / probability only.
 - Beating frontier models on hard open-ended reasoning — that is not the use case.
 
@@ -126,20 +121,20 @@ LLM) and generalizes across all three primitives with one recipe.
 
 | Model | Small sizes | License | Why / when to pick |
 |-------|-------------|---------|--------------------|
-| **Qwen3** ⭐ | 0.6B, 1.7B, 4B, 8B | Apache-2.0 (most ckpts) | **Default.** Widest small-size ladder, strong on structured/latency-sensitive classification, fine-tunes well, hosted on Databricks. Pick 0.6B/1.7B for the Jev-like speed/cost profile. |
+| **Qwen3** ⭐ | 0.6B, 1.7B, 4B, 8B | Apache-2.0 (most ckpts) | **Default.** Widest small-size ladder, strong on structured/latency-sensitive classification, fine-tunes well, hosted on Databricks. Pick 0.6B/1.7B for the lowest-latency, lowest-cost profile. |
 | Gemma 3 | 1B, 4B | Gemma license | Strong instruction-following + multilingual at modest compute; check license terms. |
 | SmolLM3 | 3B | Apache-2.0 (fully open: weights + training recipe) | Best when full transparency / reproducibility matters; good multilingual. |
 | Phi-3-mini | 3.8B | MIT | Best raw accuracy in the SLM class (~69% MMLU); larger/slower than Qwen3-1.7B. |
 | Llama 3.2 | 1B, 3B | Llama license | Widest runtime/quantization ecosystem, but **oldest** (2024) — trails the above at equal size. Keep only for ecosystem/compatibility reasons. |
 
 **Recommendation:** start at **Qwen3-1.7B**; drop to **0.6B** if the eval holds (cheapest serving,
-lowest latency — closest to Jev), or climb to **4B/8B** if accuracy on hard cases falls short.
+lowest latency), or climb to **4B/8B** if accuracy on hard cases falls short.
 Everything else in this spec is model-agnostic; only the `model=` string and the answer-token
 tokenization check (§4, §12) change between families.
 
 ---
 
-## 4. The Jev-like typed contract
+## 4. The typed probability contract
 
 The serving wrapper exposes one logical operation per primitive. All return a probability object,
 never free text.
@@ -148,7 +143,7 @@ never free text.
 |-----------|-------|--------|-----------|
 | **Choice** | prompt + option list `[A, B, C, ...]` | `{value: "B", probabilities: {A: .07, B: .88, C: .05}, confidence: .88}` | softmax over the logprobs of each option's answer token |
 | **Score** | prompt + ordinal levels `1..K` | `{value: 4, probabilities: {1:.01,...,5:.02}, expected_score: 3.9}` | logprobs over level tokens (+ optional expected value) |
-| **Noul** | prompt (a yes/no proposition) | `{probability: 0.73}` | calibrated `P(yes)` from the yes/no answer tokens |
+| **Prob** | prompt (a yes/no proposition) | `{probability: 0.73}` | calibrated `P(yes)` from the yes/no answer tokens |
 
 **Key design rule:** every answer must be a **single token** from a small closed set, so one
 forward pass yields the whole distribution. Use single-character / single-token labels
@@ -178,7 +173,7 @@ Guidelines:
 - Keep the prompt template **identical** at train and inference time (the answer token position
   is what we read logprobs from).
 - Balance classes; include hard/ambiguous cases so probabilities are meaningful, not saturated.
-- **Synthetic / distilled data** (Jev's "synthetic only" analog): use a frontier teacher to
+- **Synthetic / distilled data**: use a frontier teacher to
   label a large unlabeled corpus, or to *generate* labeled examples with rationale-then-label,
   then keep only the label. This is standard knowledge distillation and is the cheapest way to a
   large training set. Keep a **human-labeled held-out set** for calibration & evaluation (§8, §9).
@@ -194,7 +189,7 @@ run = fm.create(
     task_type="INSTRUCTION_FINETUNE",
     train_data_path="/Volumes/main/logprob/train/train.jsonl",
     eval_data_path="/Volumes/main/logprob/train/eval.jsonl",
-    register_to="main.logprob.jev_like_qwen3",    # Unity Catalog model
+    register_to="main.logprob.logprob_qwen3",     # Unity Catalog model
     training_duration="3ep",                       # epochs; small models converge fast on narrow tasks
     learning_rate="5e-6",
     # data_prep_cluster_id / context_length as needed; confirm the exact Qwen variant string,
@@ -225,10 +220,10 @@ from databricks.sdk.service.serving import (
 
 w = WorkspaceClient()
 w.serving_endpoints.create(
-    name="jev-like-qwen3",
+    name="logprob-qwen3",
     config=EndpointCoreConfigInput(
         served_entities=[ServedEntityInput(
-            entity_name="main.logprob.jev_like_qwen3",
+            entity_name="main.logprob.logprob_qwen3",
             entity_version="1",
             # provisioned throughput band (tokens/sec) — size to your peak QPS
             min_provisioned_throughput=0,      # scale-to-zero for spiky/low volume
@@ -256,7 +251,7 @@ client = OpenAI(
 def choice(prompt: str, options: dict[str, str], T: float = 1.0):
     """options maps answer-token -> label, e.g. {' A':'negative',' B':'neutral',' C':'positive'}"""
     r = client.completions.create(
-        model="jev-like-qwen3",
+        model="logprob-qwen3",
         prompt=prompt,
         max_tokens=1,
         temperature=0.0,
@@ -274,7 +269,7 @@ def choice(prompt: str, options: dict[str, str], T: float = 1.0):
     return {"value": value, "probabilities": probs, "confidence": probs[value]}
 ```
 
-`Score` and `Noul` are the same read with different answer-token sets (digits, or `Y`/`N`); `Noul`
+`Score` and `Prob` are the same read with different answer-token sets (digits, or `Y`/`N`); `Prob`
 returns `P(Y)` directly and `Score` can also return an expected value `Σ level · p(level)`.
 
 ---
@@ -284,14 +279,15 @@ returns `P(Y)` directly and `Score` can also return an expected value `Σ level 
 Package the read + calibration + contract as an MLflow `pyfunc` model (or a small Databricks App /
 AI Gateway route) so clients get `{value, probability, confidence}` and never touch raw logprobs.
 The calibration temperature `T` (and any per-class Platt parameters) live in a UC table and are
-loaded at serving time. This wrapper is the customer-facing "Jev" surface.
+loaded at serving time. This wrapper is the customer-facing typed-probability surface.
 
 ---
 
 ## 8. Phase 3 — Calibration (the "meaning" of the probability)
 
-A raw softmax over logprobs is usually **over-confident**. To make the number trustworthy — Jev's
-whole value proposition — fit a post-hoc calibrator on the **held-out labeled set**:
+A raw softmax over logprobs is usually **over-confident**. To make the number trustworthy — the
+whole value proposition of a log-prob model — fit a post-hoc calibrator on the **held-out labeled
+set**:
 
 - **Temperature scaling** (Guo et al., 2017): fit a single scalar `T` minimizing NLL on held-out
   logits. Cheap, one parameter, does not change the argmax (so accuracy is unchanged), only the
@@ -308,7 +304,7 @@ Lakeflow job comparing recent prediction confidence vs. realized outcomes.
 > single forced token): fast and simple, **but hard token-masking changes the conditional
 > distribution**, so the raw softmax is not directly comparable across inputs. Either way, the
 > probability only *means* something after post-hoc calibration on held-out data — this is the
-> step that turns "logprobs" into a Jev-like calibrated confidence. For high-stakes uses, wrap the
+> step that turns "logprobs" into a calibrated confidence. For high-stakes uses, wrap the
 > calibrated scores in **conformal prediction** for distribution-free coverage guarantees.
 
 ---
@@ -319,7 +315,7 @@ Lakeflow job comparing recent prediction confidence vs. realized outcomes.
 |-----------|--------|---------------|
 | Accuracy | top-1 accuracy / macro-F1 | ≥ frontier teacher on the narrow task |
 | Calibration | ECE, Brier, log-loss | ECE materially lower after temperature scaling |
-| Latency | p50 / p95 end-to-end | goal in Jev's 70–500 ms band for the 1B model |
+| Latency | p50 / p95 end-to-end | goal in the sub-second band (e.g. 70–500 ms) for the 1B model |
 | Throughput | calls/sec per PT band | drives the cost model (§11) |
 | Cost | $ / 1M calls | vs. frontier baselines (§11) |
 
@@ -394,8 +390,9 @@ Break-even against a flat ~$4,600/mo OSS band (`N* = fixed_cost / per_call_api_c
 - vs **GPT-4o-mini / Luna** (the cheapest tiers): only ≈ **200M calls/mo**.
 
 **Honest read of the numbers:**
-- The dramatic "40–400× cheaper" gap Jev advertises is realistic **against premium chat tiers**
-  (GPT-5, Haiku) at high volume — that is where OSS-on-Databricks shines.
+- The dramatic order-of-magnitude cost gap sometimes advertised for these models is realistic
+  **against premium chat tiers** (GPT-5, Haiku) at high volume — that is where OSS-on-Databricks
+  shines.
 - Against the **cheapest** frontier tiers, the API wins on pure $/call until you reach very high,
   steady volume. The OSS case there rests on the **non-price** advantages below.
 - The comparison also **understates** the API cost whenever a chat model is prompted to reason in
@@ -403,25 +400,25 @@ Break-even against a flat ~$4,600/mo OSS band (`N* = fixed_cost / per_call_api_c
 
 **Non-price advantages (often the real decision drivers):**
 - **Data governance / residency:** inputs never leave the customer's Databricks + UC boundary.
-- **Latency & determinism:** small model, one token, no external network hop → Jev-like 70–500 ms;
+- **Latency & determinism:** small model, one token, no external network hop → ~70–500 ms;
   `temperature=0` gives reproducible probabilities.
 - **No rate limits / no vendor lock-in / no silent model swaps** under you.
 - **Calibrated by construction:** the probability is fit to *their* outcomes, not a generic model's.
 
 ---
 
-## 12. OSS landscape: building blocks comparable to Jev
+## 12. OSS landscape: building blocks for a log-prob model
 
-Jev is a single closed product, but its *capability* — typed value + calibrated probability — is
-assembled from open, composable pieces. There is no single open-weight "Jev"; you build the
-equivalent from three layers, all of which run on/with Databricks:
+Commercial log-prob products are closed, but the *capability* — typed value + calibrated
+probability — is assembled from open, composable pieces. There is no single open-weight
+equivalent; you build it from three layers, all of which run on/with Databricks:
 
 **Layer 1 — the base model (open weights).** Qwen3 (0.6B–8B), Gemma 3, SmolLM3, Phi-3, Llama 3.2.
 See §3.1. This spec fine-tunes one of these; that's the "learned probabilities" part.
 
 **Layer 2 — structural guarantees (constrained decoding / structured generation).** These force
 the output into a closed schema — a single label token, a JSON object, a grammar — so there is
-never a parse failure, matching Jev's "no type errors" promise:
+never a parse failure, eliminating type/parse errors:
 - **Outlines** (dottxt-ai) — Python-first; JSON Schema / Pydantic / regex / CFG; backends for
   transformers, vLLM, llama.cpp. Best for product integration.
 - **XGrammar / XGrammar-2** (mlc-ai) — grammar/automaton engine co-designed with inference engines
@@ -437,8 +434,8 @@ never a parse failure, matching Jev's "no type errors" promise:
 
 **Key nuance from the literature:** structural correctness ≠ semantic correctness, and hard
 masking distorts the native distribution (§8). Small models can obey the grammar yet be wrong, and
-their raw probabilities are over-confident — so **Layer 3 is not optional**. Jev's RLCD folds
-calibration into training; our open stack achieves the same end by fine-tuning (Layer 1) +
+their raw probabilities are over-confident — so **Layer 3 is not optional**. A closed model may
+fold calibration into training; our open stack achieves the same end by fine-tuning (Layer 1) +
 constraining (Layer 2) + calibrating (Layer 3), each independently swappable and governed in UC.
 
 ### 12.1 Runnable example — constrained decoding + calibrated probabilities
@@ -493,7 +490,7 @@ out = model.generate(**ins, max_new_tokens=2, do_sample=False, logits_processor=
 print(tok.decode(out[0][ins.input_ids.shape[1]:], skip_special_tokens=True))   # a valid digit
 ```
 
-**C — The Jev-like part: a *calibrated probability distribution*, not just a sample.**
+**C — The calibrated part: a *calibrated probability distribution*, not just a sample.**
 Constrained sampling (A/B) guarantees the *shape*; it does not give a trustworthy *number*. For a
 closed label set, do **one forward pass**, read the logits over the label tokens, and apply the
 temperature `T` fit in §8. This is the local equivalent of the §6.1 serving read and produces the
@@ -506,7 +503,7 @@ LABELS = {"negative": " negative", "neutral": " neutral", "positive": " positive
 # first token id of each label (verify single-token or use first-token scoring; see §12 tokenization note)
 LABEL_IDS = {k: tok(v, add_special_tokens=False).input_ids[0] for k, v in LABELS.items()}
 
-def jev_choice(prompt: str, T: float = 1.0):
+def logprob_choice(prompt: str, T: float = 1.0):
     ins = tok(prompt, return_tensors="pt").to("cuda")
     with torch.no_grad():
         logits = model(**ins).logits[0, -1, :]         # next-token logits at the answer position
@@ -516,12 +513,12 @@ def jev_choice(prompt: str, T: float = 1.0):
     value = max(dist, key=dist.get)
     return {"value": value, "probabilities": dist, "confidence": dist[value]}
 
-print(jev_choice("Classify the sentiment.\nText: 'never coming back'\nAnswer:", T=1.7))
+print(logprob_choice("Classify the sentiment.\nText: 'never coming back'\nAnswer:", T=1.7))
 # -> {'value': 'negative', 'probabilities': {...}, 'confidence': 0.94}
 ```
 
 `T` comes from the held-out calibration fit (§8); `T > 1` softens the over-confident raw softmax.
-Swap the label set for digits (`Score`) or `Y`/`N` (`Noul`) to cover the other two primitives.
+Swap the label set for digits (`Score`) or `Y`/`N` (`Prob`) to cover the other two primitives.
 
 ---
 
@@ -535,8 +532,8 @@ Swap the label set for digits (`Score`) or `Y`/`N` (`Noul`) to cover the other t
   run a real load test to fix the cost model before quoting.
 - **$/DBU and API prices move** — all §11 numbers are 2026-09-23 placeholders.
 - **Calibration drift:** distribution shift degrades `T`; schedule re-calibration + monitoring.
-- **RLCD is not reproduced** — we approximate its intent (outcome-calibrated probabilities) with
-  distillation + temperature scaling, which is sufficient for the demo but is not Jev's method.
+- **No proprietary training method is reproduced** — we approximate outcome-calibrated
+  probabilities with distillation + temperature scaling, sufficient for the demo.
 - **Accuracy ceiling:** a 1B model may trail the teacher on hard cases; step up to 3B/8B or
   improve the distilled dataset if eval falls short.
 
@@ -544,9 +541,6 @@ Swap the label set for digits (`Score`) or `Y`/`N` (`Noul`) to cover the other t
 
 ## 14. References
 
-- **Jev (AI model)** — Wikipedia: <https://en.wikipedia.org/wiki/Jev_(AI_model)> (read 2026-09-23).
-- **(unavailable)** ChatGPT share link from the request:
-  `https://chatgpt.com/s/t_6ab0fbe0d5b481918375ae5ee1017d23` — requires auth, not fetched.
 - **Databricks Model Training / Foundation Model Fine-tuning** (task types, supported models incl.
   Qwen family): Databricks docs, *large-language-models/foundation-model-training* and
   *model-serving/foundation-model-overview* / *serve-custom-llms* (Qwen support confirmed
