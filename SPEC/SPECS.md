@@ -534,6 +534,12 @@ Swap the label set for digits (`Score`) or `Y`/`N` (`Prob`) to cover the other t
 All arXiv IDs below were verified by fetching the paper page (title + authors + ID confirmed on
 2026-09-23). This grounds the design choices in §4–§8 and §12.
 
+> **A full comprehensive survey (~75 papers)** — calibration, uncertainty quantification,
+> hallucination detection, selective prediction, conformal prediction, constrained decoding, and
+> distillation/small-models — lives in [`SURVEY.md`](./SURVEY.md), with the same fetch-based
+> verification (and a control test showing fake IDs 404). The list below is the load-bearing
+> subset.
+
 **Confidence calibration — the core of a log-prob model.**
 - **Guo, Pleiss, Sun & Weinberger, *On Calibration of Modern Neural Networks*, ICML 2017**
   (arXiv 1706.04599). Shows modern nets are miscalibrated and that **temperature scaling** — one
