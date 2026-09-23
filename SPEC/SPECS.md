@@ -30,7 +30,8 @@ Databricks governance boundary. §11 quantifies the trade-off and the break-even
 
 > **Sources note.** All Databricks feature names, DBU rates, and third-party API prices below were
 > gathered via web research on 2026-09-23 and are **illustrative** — verify against the live
-> pricing pages and your contract before quoting a customer (see §14, References).
+> pricing pages and your contract before quoting a customer (see §15, References; §13 has the
+> verified academic literature).
 
 ---
 
@@ -289,10 +290,14 @@ A raw softmax over logprobs is usually **over-confident**. To make the number tr
 whole value proposition of a log-prob model — fit a post-hoc calibrator on the **held-out labeled
 set**:
 
-- **Temperature scaling** (Guo et al., 2017): fit a single scalar `T` minimizing NLL on held-out
-  logits. Cheap, one parameter, does not change the argmax (so accuracy is unchanged), only the
-  confidence. This is our default.
+- **Temperature scaling** (Guo et al., 2017, arXiv 1706.04599): fit a single scalar `T` minimizing
+  NLL on held-out logits. Cheap, one parameter, does not change the argmax (so accuracy is
+  unchanged), only the confidence. This is our default, and it transfers to transformers
+  specifically (Desai & Durrett, 2020, arXiv 2003.07892).
 - **Platt / isotonic** per class if temperature scaling under-fits multi-class miscalibration.
+- **Verbalized confidence** (Tian et al., 2023, arXiv 2305.14975) is an alternative worth
+  A/B-testing: asking the model to *state* a confidence can beat its raw softmax on RLHF-tuned
+  models — but it costs extra output tokens, against the one-token design here. See §13.
 
 Report calibration quality with **ECE** (expected calibration error), **Brier score**, and
 **log-loss**, alongside accuracy/F1. Re-fit `T` on a schedule or when drift monitoring fires — a
@@ -305,7 +310,9 @@ Lakeflow job comparing recent prediction confidence vs. realized outcomes.
 > distribution**, so the raw softmax is not directly comparable across inputs. Either way, the
 > probability only *means* something after post-hoc calibration on held-out data — this is the
 > step that turns "logprobs" into a calibrated confidence. For high-stakes uses, wrap the
-> calibrated scores in **conformal prediction** for distribution-free coverage guarantees.
+> calibrated scores in **conformal prediction** for distribution-free coverage guarantees
+> (Angelopoulos & Bates, 2021, arXiv 2107.07511; for the LLM setting, Quach et al., 2023,
+> arXiv 2306.10193).
 
 ---
 
@@ -522,7 +529,60 @@ Swap the label set for digits (`Score`) or `Y`/`N` (`Prob`) to cover the other t
 
 ---
 
-## 13. Risks, caveats & open questions
+## 13. Related work (verified literature)
+
+All arXiv IDs below were verified by fetching the paper page (title + authors + ID confirmed on
+2026-09-23). This grounds the design choices in §4–§8 and §12.
+
+**Confidence calibration — the core of a log-prob model.**
+- **Guo, Pleiss, Sun & Weinberger, *On Calibration of Modern Neural Networks*, ICML 2017**
+  (arXiv 1706.04599). Shows modern nets are miscalibrated and that **temperature scaling** — one
+  scalar — largely fixes it. This is the method in §8.
+- **Desai & Durrett, *Calibration of Pre-trained Transformers*, 2020** (arXiv 2003.07892). The
+  same story for BERT/RoBERTa: well-calibrated in-domain, and temperature scaling / label
+  smoothing help out-of-domain. Justifies applying §8 to a transformer classifier.
+- **Kadavath et al., *Language Models (Mostly) Know What They Know*, 2022** (arXiv 2207.05221).
+  Larger LMs are well-calibrated on multiple-choice / true-false **when the answer space is
+  constrained and well-formatted** — exactly the closed-token setup this spec builds (§4).
+- **Tian et al., *Just Ask for Calibration*, 2023** (arXiv 2305.14975). On RLHF-tuned models,
+  *verbalized* confidence can be better-calibrated than conditional probabilities — the
+  alternative flagged in §8 (traded off against the one-token design).
+
+**Selective prediction / abstention — what to do with a low-confidence output.**
+- **Geifman & El-Yaniv, *Selective Classification for Deep Neural Networks*, 2017**
+  (arXiv 1705.08500). The risk–coverage framework: reject uncertain predictions to guarantee a
+  target error rate. This is how a calibrated confidence becomes an actionable "route to a human."
+- **Kamath, Jia & Liang, *Selective Question Answering under Domain Shift*, 2020**
+  (arXiv 2006.09462). A trained calibrator decides when to abstain — the pattern behind the
+  drift-monitoring / human-review hooks in §8–§9.
+
+**Conformal prediction — distribution-free guarantees for high-stakes use.**
+- **Angelopoulos & Bates, *A Gentle Introduction to Conformal Prediction and Distribution-Free
+  Uncertainty Quantification*, 2021** (arXiv 2107.07511). Practical tutorial; the wrapper referenced
+  in §8 for coverage guarantees.
+- **Quach et al., *Conformal Language Modeling*, 2023** (arXiv 2306.10193). Extends conformal
+  prediction to generative LMs (calibrated stopping / rejection), i.e. the LLM-specific version.
+
+**Constrained / structured decoding — the structural-guarantee layer (§12).**
+- **Willard & Louf, *Efficient Guided Generation for Large Language Models*, 2023**
+  (arXiv 2307.09702). The FSM-indexing method behind **Outlines** (§12.1-A).
+- **Dong et al., *XGrammar: Flexible and Efficient Structured Generation Engine for LLMs*, 2024**
+  (arXiv 2411.15100). Context-free-grammar decoding with up to ~100× speedup — **XGrammar** (§12.1-B).
+
+**Base models.**
+- **Qwen3 Technical Report, 2025** (arXiv 2505.09388) — the 0.6B–235B family; small variants are
+  the §3.1 default.
+- **Phi-3 Technical Report, 2024** (arXiv 2404.14219) — the SLM accuracy point of comparison in §3.1.
+
+> **Caveat on scope.** This is a targeted reading of the most load-bearing results, not an
+> exhaustive survey. Notable adjacent threads *not* covered here: verbalized/consistency-based
+> uncertainty beyond Tian et al., calibration under fine-tuning and distribution shift, and the
+> semantic-vs-structural gap in constrained decoding (§12). Treat the list as a defensible
+> starting point, not a complete related-work section.
+
+---
+
+## 14. Risks, caveats & open questions
 
 - **Single-token labels must tokenize to one id** in the base tokenizer — verify per model; pick
   labels accordingly (leading-space variants like `" A"` often differ from `"A"`).
@@ -539,19 +599,30 @@ Swap the label set for digits (`Score`) or `Y`/`N` (`Prob`) to cover the other t
 
 ---
 
-## 14. References
+## 15. References
 
+**Peer-reviewed / arXiv (all IDs verified 2026-09-23 — see §13 for how each maps to the design):**
+- Guo, Pleiss, Sun & Weinberger, *On Calibration of Modern Neural Networks*, ICML 2017 — arXiv 1706.04599.
+- Desai & Durrett, *Calibration of Pre-trained Transformers*, 2020 — arXiv 2003.07892.
+- Kadavath et al., *Language Models (Mostly) Know What They Know*, 2022 — arXiv 2207.05221.
+- Tian et al., *Just Ask for Calibration*, 2023 — arXiv 2305.14975.
+- Geifman & El-Yaniv, *Selective Classification for Deep Neural Networks*, 2017 — arXiv 1705.08500.
+- Kamath, Jia & Liang, *Selective Question Answering under Domain Shift*, 2020 — arXiv 2006.09462.
+- Angelopoulos & Bates, *A Gentle Introduction to Conformal Prediction…*, 2021 — arXiv 2107.07511.
+- Quach et al., *Conformal Language Modeling*, 2023 — arXiv 2306.10193.
+- Willard & Louf, *Efficient Guided Generation for Large Language Models* (Outlines), 2023 — arXiv 2307.09702.
+- Dong et al., *XGrammar: Flexible and Efficient Structured Generation Engine for LLMs*, 2024 — arXiv 2411.15100.
+- *Qwen3 Technical Report*, 2025 — arXiv 2505.09388.
+- *Phi-3 Technical Report*, 2024 — arXiv 2404.14219.
+
+**Docs & tooling (not verified against a fixed version — check the live page):**
 - **Databricks Model Training / Foundation Model Fine-tuning** (task types, supported models incl.
-  Qwen family): Databricks docs, *large-language-models/foundation-model-training* and
-  *model-serving/foundation-model-overview* / *serve-custom-llms* (Qwen support confirmed
-  2026-09-22).
-- **Open-weight small models (2026)**: Qwen3 technical report (arXiv 2505.09388); Gemma 3
-  (DeepMind); SmolLM3 (Hugging Face); Phi-3 (arXiv 2404.14219); Llama 3.2 model card.
-- **Structured generation / constrained decoding**: Outlines (dottxt-ai), XGrammar / XGrammar-2
-  (mlc-ai), LLGuidance (guidance-ai); JSONSchemaBench.
-- **Foundation Model APIs — logprobs / top_logprobs**: Databricks docs,
+  Qwen family): *large-language-models/foundation-model-training*,
+  *model-serving/foundation-model-overview*, *serve-custom-llms* (Qwen support confirmed 2026-09-22).
+- **Foundation Model APIs — logprobs / top_logprobs**:
   *machine-learning/foundation-model-apis/api-reference* and *model-serving-query* API.
 - **Mosaic AI Model Serving pricing (DBU rates)**: Databricks pricing / Foundation Model APIs docs.
-- **Frontier API list prices (Sept 2026)**: OpenAI and Anthropic pricing pages.
-- **Calibration**: Guo, Pleiss, Sun, Weinberger, *On Calibration of Modern Neural Networks*,
-  ICML 2017 (temperature scaling, ECE).
+- **Frontier API list prices (Sept 2026)**: OpenAI and Anthropic pricing pages (illustrative).
+- **Other models named in §3.1**: Gemma 3 (Google DeepMind), SmolLM3 (Hugging Face), Llama 3.2
+  (Meta) — model cards, not independently verified here.
+- **Structured-generation tooling**: LLGuidance (guidance-ai); JSONSchemaBench.
