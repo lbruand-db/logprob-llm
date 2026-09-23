@@ -108,7 +108,10 @@ def _cli() -> None:
     ap.add_argument("--n-per-team", type=int, default=200)
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL"))
-    ap.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY") or os.environ.get("DATABRICKS_TOKEN"))
+    ap.add_argument(
+        "--api-key",
+        default=os.environ.get("OPENAI_API_KEY") or os.environ.get("DATABRICKS_TOKEN"),
+    )
     args = ap.parse_args()
 
     client = OpenAI(base_url=args.base_url, api_key=args.api_key)

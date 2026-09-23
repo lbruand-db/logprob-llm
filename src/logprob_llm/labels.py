@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Protocol
 
-
 # Ordered source of truth. The letter is the answer symbol; the name is only for
 # prompts / human-readable output. Keep this list == the options shown in prompts.py.
 TEAMS: list[tuple[str, str]] = [

@@ -1,5 +1,10 @@
 # logprob-llm
 
+[![CI](https://github.com/lbruand-db/logprob-llm/actions/workflows/ci.yml/badge.svg)](https://github.com/lbruand-db/logprob-llm/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+![Python](https://img.shields.io/badge/python-3.11%20|%203.12-blue)
+
 An open-source **log-prob LLM** on Databricks: a small fine-tuned open-weight model
 (default `Qwen/Qwen3-1.7B`) used as a *decision function* that returns a **calibrated
 probability over a closed answer space** — a typed `{value, probability, confidence}` —

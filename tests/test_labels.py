@@ -31,7 +31,7 @@ class FakeTokenizer:
 
 
 def test_labels_and_teams_are_consistent():
-    assert labels.LETTERS == [l for l, _ in labels.TEAMS]
+    assert labels.LETTERS == [ltr for ltr, _ in labels.TEAMS]
     assert set(labels.TEAM_NAME) == set(labels.LETTERS)
     assert len(labels.LETTERS) == len(set(labels.LETTERS))  # distinct
 

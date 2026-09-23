@@ -89,7 +89,7 @@ def collect_logits(
     endpoint: str,
     tickets: list[str],
     top_logprobs: int = 20,
-) -> "list[list[float]]":
+) -> list[list[float]]:
     """Per-ticket raw logits over the answer letters, for calibration/eval.
 
     Returns an (N, K=len(LETTERS)) list; feed to `calibrate.fit_temperature`
@@ -104,6 +104,9 @@ def collect_logits(
         )
         top = resp.choices[0].logprobs.top_logprobs[0]
         rows.append(
-            [max([top[c] for c in (l, f" {l}") if c in top] or [_MISSING_LOGIT]) for l in LETTERS]
+            [
+                max([top[c] for c in (ltr, f" {ltr}") if c in top] or [_MISSING_LOGIT])
+                for ltr in LETTERS
+            ]
         )
     return rows

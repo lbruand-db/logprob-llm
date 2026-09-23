@@ -69,7 +69,7 @@ def expected_calibration_error(
     bins = np.linspace(0.0, 1.0, n_bins + 1)
     ece = 0.0
     n = len(labels)
-    for lo, hi in zip(bins[:-1], bins[1:]):
+    for lo, hi in zip(bins[:-1], bins[1:], strict=True):
         # last bin is closed on the right so confidence == 1.0 is counted
         in_bin = (confidences > lo) & ((confidences <= hi) if hi < 1.0 else (confidences <= hi))
         count = in_bin.sum()

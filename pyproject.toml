@@ -34,3 +34,13 @@ packages = ["src/logprob_llm"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# Notebooks are Databricks source scripts (cell-structured, use dbutils/spark and
+# `# MAGIC` magics); they're syntax-checked by the CI compile job, not linted.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
