@@ -118,8 +118,8 @@ def _cli() -> None:
     rows = build_dataset(client, args.teacher_model, n_per_team=args.n_per_team)
     train, ev, calib = split(rows)
     write_jsonl(train, f"{args.out_dir}/train.jsonl", ("prompt", "response"))
-    write_jsonl(ev, f"{args.out_dir}/eval.jsonl", ("prompt", "response", "label"))
-    write_jsonl(calib, f"{args.out_dir}/calib.jsonl", ("prompt", "response", "label"))
+    write_jsonl(ev, f"{args.out_dir}/eval.jsonl", ("ticket", "label"))
+    write_jsonl(calib, f"{args.out_dir}/calib.jsonl", ("ticket", "label"))
     print(f"train={len(train)} eval={len(ev)} calib={len(calib)} -> {args.out_dir}")
 
 

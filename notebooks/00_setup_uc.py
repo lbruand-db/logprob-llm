@@ -5,9 +5,14 @@
 # MAGIC Run once. Requires CREATE on the target catalog (build-plan preflight #1).
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "main", "UC catalog (writable)")
-dbutils.widgets.text("schema", "logprob", "Schema to create")
-dbutils.widgets.text("volume", "data", "Volume for JSONL datasets")
+import os
+import sys
+sys.path.insert(0, os.path.abspath("../src"))
+from logprob_llm.config import DEFAULT_CATALOG, DEFAULT_SCHEMA, DEFAULT_VOLUME
+
+dbutils.widgets.text("catalog", DEFAULT_CATALOG, "UC catalog (writable)")
+dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema to create")
+dbutils.widgets.text("volume", DEFAULT_VOLUME, "Volume for datasets + model")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")

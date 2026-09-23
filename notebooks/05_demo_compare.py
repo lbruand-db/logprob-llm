@@ -1,36 +1,36 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 05 · Demo: calibrated one-token routing vs a frontier chat call
-# MAGIC Side-by-side on sample tickets, plus a cost snippet parameterized to the
-# MAGIC live endpoint (SPECS §11, build-plan WI-6).
+# MAGIC # 05 · Demo: calibrated typed routing vs a frontier chat call
+# MAGIC Our GPU pyfunc returns `{value, team, confidence}` in one shot; a frontier
+# MAGIC chat model returns prose we must parse and has no calibrated probability
+# MAGIC (SPECS §11, build-plan WI-6).
 
 # COMMAND ----------
-# MAGIC %pip install -q openai numpy scipy
+# MAGIC %pip install -q "databricks-sdk>=0.102.0" openai numpy scipy
 # MAGIC %restart_python
 
 # COMMAND ----------
+import os
 import re
-import sys, os, time
+import sys
+import time
 sys.path.insert(0, os.path.abspath("../src"))
-from logprob_llm.config import DEFAULT_TEACHER_MODEL, _TEACHER_HELP
+from logprob_llm.config import DEFAULT_ENDPOINT, DEFAULT_TEACHER_MODEL, _TEACHER_HELP
+from logprob_llm.labels import LETTERS
+from logprob_llm.prompts import build_routing_prompt
+from logprob_llm.serving_read import make_client, route
 
-dbutils.widgets.text("catalog", "main", "UC catalog")
-dbutils.widgets.text("schema", "logprob", "Schema")
-dbutils.widgets.text("endpoint", "logprob-qwen3", "Our serving endpoint")
+dbutils.widgets.text("endpoint", DEFAULT_ENDPOINT, "Our serving endpoint")
 dbutils.widgets.text("teacher_model", DEFAULT_TEACHER_MODEL, _TEACHER_HELP)
-
-catalog = dbutils.widgets.get("catalog"); schema = dbutils.widgets.get("schema")
 endpoint = dbutils.widgets.get("endpoint"); teacher = dbutils.widgets.get("teacher_model")
 
-from logprob_llm.serving_read import make_client, choice
-from logprob_llm.prompts import build_routing_prompt
+w = make_client()
 
+# OpenAI-compatible client for the frontier baseline.
+from openai import OpenAI
 ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
-client = make_client(f"https://{ctx.tags().get('browserHostName').get()}", ctx.apiToken().get())
-
-# Load calibration temperature persisted in notebook 04.
-T = spark.sql(f"SELECT temperature FROM {catalog}.{schema}.calibration WHERE endpoint='{endpoint}'").collect()[0][0]
-print("Using calibration T =", round(T, 3))
+host = f"https://{ctx.tags().get('browserHostName').get()}"
+oai = OpenAI(base_url=f"{host}/serving-endpoints", api_key=ctx.apiToken().get())
 
 # COMMAND ----------
 SAMPLES = [
@@ -41,20 +41,14 @@ SAMPLES = [
 ]
 
 for s in SAMPLES:
-    t0 = time.time()
-    ours = choice(client, endpoint, s, temperature=T)
-    dt = (time.time() - t0) * 1000
+    t0 = time.time(); out = route(w, endpoint, s); dt = (time.time() - t0) * 1000
     print(f"\nTICKET: {s}")
-    print(f"  OURS  -> {ours['value']} ({ours['team']})  conf={ours['confidence']:.2f}  [{dt:.0f} ms]")
+    print(f"  OURS  -> {out['value']} ({out['team']})  conf={out['confidence']:.2f}  [{dt:.0f} ms]")
 
 # COMMAND ----------
-# Frontier chat baseline for contrast (returns prose; we parse the letter).
-# A frontier model may emit whitespace/preamble/reasoning before the letter, so
-# give it room and extract the first valid routing letter robustly.
-from logprob_llm.labels import LETTERS
-
+# Frontier chat baseline: returns prose; parse the first valid letter.
 def teacher_route(text):
-    r = client.chat.completions.create(
+    r = oai.chat.completions.create(
         model=teacher,
         messages=[{"role": "user", "content": build_routing_prompt(text)}],
         max_tokens=32, temperature=0.0)
@@ -69,7 +63,7 @@ for s in SAMPLES[:2]:
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ### Cost snippet
-# MAGIC Ours emits **one token** with a calibrated distribution; the frontier baseline
-# MAGIC pays for input every call and returns prose. Plug the observed latency/throughput
-# MAGIC into the SPECS §11 model (parameterized DBU/hr × $/DBU vs $/1M tokens) for the
-# MAGIC customer's volume to get the break-even.
+# MAGIC Ours emits one forward pass with a calibrated distribution; the frontier
+# MAGIC baseline pays for input every call and returns prose. Plug the observed
+# MAGIC latency/throughput into the SPECS §11 model (GPU DBU/hr × $/DBU vs $/1M
+# MAGIC tokens) for the customer's volume to get the break-even.

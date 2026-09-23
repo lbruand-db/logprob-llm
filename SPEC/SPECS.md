@@ -3,7 +3,7 @@
 **Status:** Draft / demo blueprint
 **Owner:** lbruand
 **Last updated:** 2026-09-23
-**Platform:** Databricks (Mosaic AI Model Training a.k.a. "AI Runtime" + Mosaic AI Model Serving + Unity Catalog)
+**Platform:** Databricks (AI Runtime / Serverless GPU for fine-tuning + Mosaic AI Model Serving + Unity Catalog)
 
 ---
 
@@ -15,7 +15,7 @@ probability in `[0, 1]`). We do it on Databricks by:
 
 1. **Distilling** a frontier "teacher" model into a labeled/synthetic dataset in Unity Catalog.
 2. **Fine-tuning** a small, *current* open-weight model (**Qwen3 1.7B / 0.6B** by default — see
-   §3.1 for why, and the alternatives) with **AI Runtime / Mosaic AI Model Training** so the
+   §3.1 for why, and the alternatives) with **AI Runtime (Serverless GPU + TRL/LoRA)** so the
    answer is always a **single, constrained token**.
 3. **Reading the log-probabilities** of those answer tokens at inference (via the Model Serving
    `completions` endpoint) to recover a full probability distribution over the answer space.
@@ -108,11 +108,11 @@ accuracy demands). Llama 3.2 (1B/3B, released 2024) is dated; the 2025–2026 sm
 (Qwen3, Gemma 3, SmolLM3, Phi-3) beats it on most classification and instruction-following
 benchmarks at equal size. §3.1 gives the full comparison and the rationale for Qwen3.
 
-Databricks confirms Qwen support for both **Model Training** and **Model Serving** (docs updated
-2026-09-22): the platform hosts Qwen3 variants, the custom-LLM serving path uses
-`Qwen/Qwen2.5-VL-3B-Instruct` as its worked example, and provisioned throughput covers
-fine-tuned/custom variants. Verify the exact variant's **region / preview status and license**
-(most Qwen3 checkpoints are Apache-2.0) for your workspace before committing.
+Qwen is fine-tunable on Databricks via **AI Runtime (Serverless GPU + TRL/LoRA)** — there is an
+official "Fine-tune Qwen3-4B" tutorial (§5). Note this is *not* the older managed *Foundation Model
+Fine-tuning* API (`foundation_model.create()` / `get_models()`), which is Llama-only — a distinction
+that matters when checking availability. Verify **Serverless GPU / GPU-serving preview access and
+the model license** (most Qwen3 checkpoints are Apache-2.0) for your workspace before committing.
 
 For pure fixed-schema classification, a small encoder (e.g. ModernBERT) is even cheaper, but we
 stay on the decoder-LLM + logprobs path: it matches the request ("AI Runtime" fine-tuning of an
@@ -152,12 +152,17 @@ forward pass yields the whole distribution. Use single-character / single-token 
 
 ---
 
-## 5. Phase 2 — Fine-tuning with AI Runtime (Mosaic AI Model Training)
+## 5. Phase 2 — Fine-tuning with AI Runtime (Serverless GPU + TRL/LoRA)
 
-> Databricks has consolidated fine-tuning under **AI Runtime / Databricks (Mosaic AI) Model
-> Training**. It supports task types `INSTRUCTION_FINETUNE`, `CHAT_COMPLETION`, and
-> `CONTINUED_PRETRAIN`, and supports the Qwen family (Qwen2.5 / Qwen3) alongside Gemma, Llama and
-> others. We use **`INSTRUCTION_FINETUNE`** with (`prompt`, `response`) rows.
+> **AI Runtime** is Databricks' **Serverless GPU** offering for deep-learning workloads: you attach
+> a notebook (or submit a job) to serverless GPUs (A10/H100, an "AI vN" environment) and train with
+> standard OSS frameworks — **TRL** (`SFTTrainer`), **LoRA/PEFT**, Axolotl, LLM Foundry, PyTorch
+> FSDP/DeepSpeed — streaming data from UC Volumes and logging to MLflow. It fine-tunes **any HF
+> model, including Qwen** (there is an official "Fine-tune Qwen3-4B" tutorial).
+>
+> This is **distinct** from the older managed *Foundation Model Fine-tuning* API
+> (`databricks-genai` `foundation_model.create()`), whose `get_models()` list is Llama-only. Don't
+> confuse the two: we use AI Runtime (TRL/LoRA) so we can fine-tune Qwen.
 
 ### 5.1 Data format (Phase 1 output)
 
@@ -179,96 +184,112 @@ Guidelines:
   then keep only the label. This is standard knowledge distillation and is the cheapest way to a
   large training set. Keep a **human-labeled held-out set** for calibration & evaluation (§8, §9).
 
-### 5.2 Launch a training run
+### 5.2 Launch a training run (TRL LoRA on Serverless GPU)
+
+Attach the notebook to Serverless GPU (A10, "AI vN" env), then run a standard TRL LoRA SFT. Train
+completion-only loss on the answer letter via the `Answer:` response template, then **merge** the
+adapter and save the merged model to a UC Volume for serving (§6).
 
 ```python
-# Databricks notebook — Mosaic AI Model Training (AI Runtime)
-from databricks.model_training import foundation_model as fm
+import torch
+from datasets import load_dataset
+from peft import LoraConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTConfig, SFTTrainer
+from trl.trainer import DataCollatorForCompletionOnlyLM
 
-run = fm.create(
-    model="Qwen/Qwen3-1.7B",                      # or Qwen3-0.6B (cheaper) / Qwen3-4B (more accurate)
-    task_type="INSTRUCTION_FINETUNE",
-    train_data_path="/Volumes/main/logprob/train/train.jsonl",
-    eval_data_path="/Volumes/main/logprob/train/eval.jsonl",
-    register_to="main.logprob.logprob_qwen3",     # Unity Catalog model
-    training_duration="3ep",                       # epochs; small models converge fast on narrow tasks
-    learning_rate="5e-6",
-    # data_prep_cluster_id / context_length as needed; confirm the exact Qwen variant string,
-    # region/preview availability, and license in your workspace before running
+base = "Qwen/Qwen3-1.7B"                                  # or Qwen3-0.6B (cheaper) / Qwen3-4B
+tok = AutoTokenizer.from_pretrained(base)
+ds = load_dataset("json", data_files=f"{vol}/train.jsonl", split="train")
+ds = ds.map(lambda r: {"text": r["prompt"] + r["response"]})   # "...Answer: C"
+
+model = AutoModelForCausalLM.from_pretrained(base, torch_dtype=torch.bfloat16, device_map="auto")
+trainer = SFTTrainer(
+    model=model, train_dataset=ds,
+    peft_config=LoraConfig(r=16, lora_alpha=32, task_type="CAUSAL_LM",
+                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]),
+    data_collator=DataCollatorForCompletionOnlyLM(response_template="Answer:", tokenizer=tok),
+    args=SFTConfig(output_dir=..., num_train_epochs=3, learning_rate=2e-4, bf16=True,
+                   dataset_text_field="text", max_seq_length=1024),
 )
-run.wait()   # streams metrics; final model lands in UC registry
+trainer.train()
+merged = trainer.model.merge_and_unload()
+merged.save_pretrained(merged_dir); tok.save_pretrained(merged_dir)   # merged_dir on a UC Volume
 ```
 
 Notes:
-- **LoRA/PEFT** keeps the run cheap (tens to low-hundreds of USD for a 1–2B model on a narrow
-  task). Full fine-tune only if the task is far from the base distribution.
-- Track loss/eval in the run; the registered model in UC gets full lineage.
-- Because the label space is tiny, you need **far less data** than for open generation —
-  thousands to low tens-of-thousands of examples often suffice.
+- **LoRA/PEFT** keeps the run cheap (tens to low-hundreds of USD for a 1–2B model on a narrow task).
+- Because the label space is tiny, you need **far less data** than open generation — thousands to
+  low tens-of-thousands of examples suffice.
+- Verify the answer letters are single tokens in the base tokenizer *before* training
+  (`labels.resolve_answer_tokens`, SPECS §12).
 
 ---
 
-## 6. Phase 4 — Deployment on Mosaic AI Model Serving
+## 6. Phase 4 — Deployment on Model Serving (custom pyfunc, GPU)
 
-Serve the UC model on a **provisioned-throughput** endpoint (custom fine-tuned models are served
-via provisioned throughput, billed in DBU/hour — see §11).
+The fine-tuned model is served **not** as a chat model but as a **custom MLflow `pyfunc`** that
+does the log-prob math internally and returns the typed contract directly. Why: custom LLM serving
+is `llm/v1/chat`, which does not reliably expose token `logprobs`; embedding the read in the model
+(one forward pass → answer-letter logits → temperature-scaled softmax) removes that dependency and
+makes the endpoint return `{value, team, probabilities, confidence, answer_logits}`. Deploy on a
+GPU endpoint (`workload_type="GPU_MEDIUM"` = A10; scale-to-zero for spiky volume).
 
 ```python
+import mlflow
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import (
-    EndpointCoreConfigInput, ServedEntityInput,
+from databricks.sdk.service.serving import EndpointCoreConfigInput, ServedEntityInput
+from logprob_llm.wrapper import LogProbRouter
+
+mlflow.set_registry_uri("databricks-uc")
+info = mlflow.pyfunc.log_model(
+    name="router", python_model=LogProbRouter(),
+    artifacts={"model": merged_dir},                       # merged model on a UC Volume (§5.2)
+    code_paths=[".../src/logprob_llm"],                     # ships the package for relative imports
+    pip_requirements=["transformers", "torch", "accelerate", "numpy", "scipy", "mlflow"],
+    registered_model_name="serverless_stable_hma18t_catalog.logprob.logprob_qwen3",
 )
 
 w = WorkspaceClient()
-w.serving_endpoints.create(
+w.serving_endpoints.create_and_wait(
     name="logprob-qwen3",
-    config=EndpointCoreConfigInput(
-        served_entities=[ServedEntityInput(
-            entity_name="main.logprob.logprob_qwen3",
-            entity_version="1",
-            # provisioned throughput band (tokens/sec) — size to your peak QPS
-            min_provisioned_throughput=0,      # scale-to-zero for spiky/low volume
-            max_provisioned_throughput=980,
-        )],
-    ),
+    config=EndpointCoreConfigInput(served_entities=[ServedEntityInput(
+        entity_name="serverless_stable_hma18t_catalog.logprob.logprob_qwen3",
+        entity_version=str(info.registered_model_version),
+        workload_type="GPU_MEDIUM", workload_size="Small", scale_to_zero_enabled=True,
+    )]),
 )
 ```
 
-### 6.1 Reading log-probabilities (the crux)
+### 6.1 How the log-prob read works (inside the pyfunc)
 
-Databricks Foundation Model APIs expose `logprobs` and `top_logprobs` (0–20) — **on the
-`completions` endpoint, not the chat endpoint.** So we query with the OpenAI-compatible
-*completions* schema, set `max_tokens=1`, and read the distribution at the answer position.
+`LogProbRouter.predict` (see `src/logprob_llm/wrapper.py`) runs one forward pass, takes the
+next-token logits at the answer position over the answer-letter token ids, and applies the
+calibration temperature `T`:
 
 ```python
-from openai import OpenAI
-import os, math
-
-client = OpenAI(
-    base_url=f"{os.environ['DATABRICKS_HOST']}/serving-endpoints",
-    api_key=os.environ["DATABRICKS_TOKEN"],
-)
-
-def choice(prompt: str, options: dict[str, str], T: float = 1.0):
-    """options maps answer-token -> label, e.g. {' A':'negative',' B':'neutral',' C':'positive'}"""
-    r = client.completions.create(
-        model="logprob-qwen3",
-        prompt=prompt,
-        max_tokens=1,
-        temperature=0.0,
-        logprobs=True,
-        top_logprobs=20,          # covers the whole small answer space in one pass
-    )
-    top = r.choices[0].logprobs.top_logprobs[0]          # {token: logprob}
-    # keep only our answer tokens, apply temperature T, renormalize
-    logits = {tok: top.get(tok, -30.0) / T for tok in options}
-    m = max(logits.values())
-    exps = {tok: math.exp(v - m) for tok, v in logits.items()}
-    Z = sum(exps.values())
-    probs = {options[tok]: e / Z for tok, e in exps.items()}
-    value = max(probs, key=probs.get)
-    return {"value": value, "probabilities": probs, "confidence": probs[value]}
+inputs = tokenizer(build_routing_prompt(ticket), return_tensors="pt").to(model.device)
+logits = model(**inputs).logits[0, -1, :].float().cpu().numpy()   # next-token distribution
+answer_logits = select_answer_logits(logits, answer_ids)          # gather A..F token logits
+result = score(answer_logits, temperature=T)                      # -> {value, team, probs, confidence}
 ```
+
+The raw `answer_logits` are returned too (T-independent), so calibration (§8) can fit `T` from the
+served endpoint without re-running the model.
+
+> **Fallback:** if you serve the model as a plain completions endpoint instead, Databricks FM APIs
+> expose `logprobs`/`top_logprobs` (0–20) on the **completions** path (not chat) — read
+> `top_logprobs` at `max_tokens=1` and softmax over the answer tokens. The pyfunc approach above is
+> preferred because it is self-contained and serving-mode-agnostic.
+
+<details><summary>Legacy completions-logprobs read (fallback)</summary>
+
+```python
+r = client.completions.create(model="logprob-qwen3", prompt=prompt, max_tokens=1,
+                              temperature=0.0, logprobs=True, top_logprobs=20)
+top = r.choices[0].logprobs.top_logprobs[0]   # {token: logprob}; softmax over answer tokens with T
+```
+</details>
 
 `Score` and `Prob` are the same read with different answer-token sets (digits, or `Y`/`N`); `Prob`
 returns `P(Y)` directly and `Score` can also return an expected value `Σ level · p(level)`.

@@ -12,11 +12,17 @@
 import sys, os
 sys.path.insert(0, os.path.abspath("../src"))
 sys.path.insert(0, os.path.abspath("../data"))
-from logprob_llm.config import DEFAULT_TEACHER_MODEL, _TEACHER_HELP
+from logprob_llm.config import (
+    DEFAULT_CATALOG,
+    DEFAULT_SCHEMA,
+    DEFAULT_TEACHER_MODEL,
+    DEFAULT_VOLUME,
+    _TEACHER_HELP,
+)
 
-dbutils.widgets.text("catalog", "main", "UC catalog")
-dbutils.widgets.text("schema", "logprob", "Schema")
-dbutils.widgets.text("volume", "data", "Volume")
+dbutils.widgets.text("catalog", DEFAULT_CATALOG, "UC catalog")
+dbutils.widgets.text("schema", DEFAULT_SCHEMA, "Schema")
+dbutils.widgets.text("volume", DEFAULT_VOLUME, "Volume")
 dbutils.widgets.text("teacher_model", DEFAULT_TEACHER_MODEL, _TEACHER_HELP)
 dbutils.widgets.text("n_per_team", "300", "Tickets per team")
 
@@ -40,9 +46,9 @@ client = OpenAI(base_url=f"{host}/serving-endpoints", api_key=token)
 # COMMAND ----------
 rows = build_dataset(client, teacher, n_per_team=n_per_team)
 train, ev, calib = split(rows)
-write_jsonl(train, f"{vol}/train.jsonl", ("prompt", "response"))
-write_jsonl(ev,    f"{vol}/eval.jsonl",  ("prompt", "response", "label"))
-write_jsonl(calib, f"{vol}/calib.jsonl", ("prompt", "response", "label"))
+write_jsonl(train, f"{vol}/train.jsonl", ("prompt", "response"))   # SFT: prompt + answer letter
+write_jsonl(ev,    f"{vol}/eval.jsonl",  ("ticket", "label"))       # eval: raw ticket + gold letter
+write_jsonl(calib, f"{vol}/calib.jsonl", ("ticket", "label"))       # calibration split
 print(f"train={len(train)} eval={len(ev)} calib={len(calib)}  ->  {vol}")
 
 # COMMAND ----------
