@@ -441,6 +441,88 @@ their raw probabilities are over-confident — so **Layer 3 is not optional**. J
 calibration into training; our open stack achieves the same end by fine-tuning (Layer 1) +
 constraining (Layer 2) + calibrating (Layer 3), each independently swappable and governed in UC.
 
+### 12.1 Runnable example — constrained decoding + calibrated probabilities
+
+These run locally (e.g. in a Databricks GPU notebook against the fine-tuned Qwen3 checkpoint) and
+are the **dev-loop mirror** of the served endpoint in §6. APIs verified against Outlines v1 and
+XGrammar (2026).
+
+```bash
+pip install "outlines>=1.0" xgrammar transformers torch pydantic
+```
+
+**A — Outlines: guaranteed-valid label (Layer 2, structural guarantee).**
+The Generator can only emit one of the allowed labels — no parsing, no repair.
+
+```python
+from typing import Literal
+from outlines import Generator, models
+
+model = models.transformers("Qwen/Qwen3-1.7B", device="cuda")   # your fine-tuned ckpt path also works
+Label = Literal["negative", "neutral", "positive"]              # closed answer space
+
+classify = Generator(model, Label)
+label = classify(
+    "Classify the sentiment.\nText: 'the wait was long but the food was worth it'\nAnswer:",
+    max_new_tokens=8, temperature=0.0,
+).strip()
+print(label)   # -> one of the three labels, guaranteed
+```
+
+**B — XGrammar: schema-constrained structured output (Layer 2, richer grammars).**
+XGrammar's HF `LogitsProcessor` enforces a grammar/JSON-schema at decode time with near-zero
+overhead — use it when the typed value is an object, not a single label.
+
+```python
+import torch, xgrammar as xgr
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+name = "Qwen/Qwen3-1.7B"
+tok = AutoTokenizer.from_pretrained(name)
+model = AutoModelForCausalLM.from_pretrained(name, torch_dtype=torch.bfloat16, device_map="cuda").eval()
+
+ti = xgr.TokenizerInfo.from_huggingface(tok, vocab_size=model.config.vocab_size)
+compiler = xgr.GrammarCompiler(ti)
+# a "Score" primitive as a grammar: one digit 1-5
+compiled = compiler.compile_grammar(r'root ::= "1" | "2" | "3" | "4" | "5"')
+lp = xgr.contrib.hf.LogitsProcessor(compiled)
+
+prompt = "Rate risk 1-5.\nTransaction: card-not-present, $4,300, new device, 3am\nAnswer:"
+ins = tok(prompt, return_tensors="pt").to("cuda")
+out = model.generate(**ins, max_new_tokens=2, do_sample=False, logits_processor=[lp])
+print(tok.decode(out[0][ins.input_ids.shape[1]:], skip_special_tokens=True))   # a valid digit
+```
+
+**C — The Jev-like part: a *calibrated probability distribution*, not just a sample.**
+Constrained sampling (A/B) guarantees the *shape*; it does not give a trustworthy *number*. For a
+closed label set, do **one forward pass**, read the logits over the label tokens, and apply the
+temperature `T` fit in §8. This is the local equivalent of the §6.1 serving read and produces the
+`{value, probabilities, confidence}` contract.
+
+```python
+import torch, torch.nn.functional as F
+
+LABELS = {"negative": " negative", "neutral": " neutral", "positive": " positive"}
+# first token id of each label (verify single-token or use first-token scoring; see §12 tokenization note)
+LABEL_IDS = {k: tok(v, add_special_tokens=False).input_ids[0] for k, v in LABELS.items()}
+
+def jev_choice(prompt: str, T: float = 1.0):
+    ins = tok(prompt, return_tensors="pt").to("cuda")
+    with torch.no_grad():
+        logits = model(**ins).logits[0, -1, :]         # next-token logits at the answer position
+    ids = torch.tensor(list(LABEL_IDS.values()), device=logits.device)
+    probs = F.softmax(logits[ids] / T, dim=-1)          # temperature-scaled over the label set only
+    dist = {lab: probs[i].item() for i, lab in enumerate(LABEL_IDS)}
+    value = max(dist, key=dist.get)
+    return {"value": value, "probabilities": dist, "confidence": dist[value]}
+
+print(jev_choice("Classify the sentiment.\nText: 'never coming back'\nAnswer:", T=1.7))
+# -> {'value': 'negative', 'probabilities': {...}, 'confidence': 0.94}
+```
+
+`T` comes from the held-out calibration fit (§8); `T > 1` softens the over-confident raw softmax.
+Swap the label set for digits (`Score`) or `Y`/`N` (`Noul`) to cover the other two primitives.
+
 ---
 
 ## 13. Risks, caveats & open questions
